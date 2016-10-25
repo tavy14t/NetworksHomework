@@ -4,17 +4,21 @@
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <sys/socket.h>
 #include <fcntl.h>
 #include <dirent.h>
 #include <errno.h>
-#include <ctype.h>
+#include <time.h>
+
 #include "sha256.h"
 
+#define MAX_PATH 256
 #define INPUT_LEN 276
 #define ARG_LEN 256
 #define CMD_LEN 20
 //#define GENERATE_SHA_KEY
-#define DEBUG
+//#define DEBUG
+
 
 void PrintHelp()
 {
@@ -71,17 +75,17 @@ void LogIn()
 	( (char*) strchr(pass, '\n') )[0] = '\0';
 	
 	if(pipe(login_pipe) == -1){
-		fprintf(stderr, "Eroare la pipe-ul de login.\n");
+		fprintf(stderr, "[ERROR] pipe login.\n");
 		exit(1);	
 	}
 	if(pipe(login_pipe_ret) == -1){
-		fprintf(stderr, "Eroare la pipe-ul de login feedback.\n");
+		fprintf(stderr, "[ERROR] pipe login feedback.\n");
 		exit(1);	
 	}
 
 	switch(fork()){
 		case -1:
-			fprintf(stderr, "Eroare la fork 1.\n");
+			fprintf(stderr, "[ERROR] Fork 1.\n");
 			exit(1);
 		case 0:
 			close(login_pipe[1]);
@@ -97,7 +101,7 @@ void LogIn()
 			int logging_in_status;
 			read(login_pipe_ret[0], &logging_in_status, 4);
 			while(logging_in_status != 0){
-				fprintf(stderr, "Eroare la logare! Parola gresita.\n");
+				fprintf(stderr, "[ERROR] Parola gresita.\n");
 				exit(1);
 			}
 	}
@@ -154,6 +158,125 @@ void ParseString(char* input, char *name, char *arg1)
 	}
 }
 
+char* GetFilePermissions(int mask)
+{
+	char* info = malloc(30);
+	sprintf(info, "%s", "USR[");
+    sprintf(info, "%s%s", info, (mask & S_IRUSR) ? "r" : "-");
+    sprintf(info, "%s%s", info, (mask & S_IWUSR) ? "w" : "-");
+    sprintf(info, "%s%s", info, (mask & S_IXUSR) ? "x" : "-");
+    sprintf(info, "%s%s", info, "]");
+    sprintf(info, "%s%s", info, " GRP[");
+    sprintf(info, "%s%s", info, (mask & S_IRGRP) ? "r" : "-");
+    sprintf(info, "%s%s", info, (mask & S_IWGRP) ? "w" : "-");
+    sprintf(info, "%s%s", info, (mask & S_IXGRP) ? "x" : "-");
+    sprintf(info, "%s%s", info, "]");
+    sprintf(info, "%s%s", info, " OTH[");
+    sprintf(info, "%s%s", info, (mask & S_IROTH) ? "r" : "-");
+    sprintf(info, "%s%s", info, (mask & S_IWOTH) ? "w" : "-");
+    sprintf(info, "%s%s", info, (mask & S_IXOTH) ? "x" : "-");
+    sprintf(info, "%s%s", info, "]");
+    return info;
+}
+
+void PrintFileDetails(char* filepath)
+{
+	int socket_pair[2];
+	char msg[1024];
+
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, socket_pair) < 0) 
+  	{ 
+	    fprintf(stderr, "[ERROR] socketpair\n"); 
+	    exit(1); 
+  	}
+
+  	switch(fork())
+  	{
+  		case -1:
+  			fprintf(stderr, "[ERROR] fork - socket_pair\n");
+  			exit(1);
+  		case 0: {
+  			if(read(socket_pair[0], filepath, MAX_PATH) < 0)
+  				fprintf(stderr, "[ERROR] Could not read from socket_pair\n");
+
+			struct stat t_stat;
+    		stat(filepath, &t_stat);
+
+    		write(socket_pair[0], ctime(&t_stat.st_ctime), 25);
+  			write(socket_pair[0], ctime(&t_stat.st_mtime), 25);
+  			write(socket_pair[0], &t_stat.st_size, 8);
+
+  			char* attribs = GetFilePermissions(t_stat.st_mode);
+  			write(socket_pair[0], attribs, 30);
+
+
+  			exit(0);
+  		}
+  		default: {
+  			write(socket_pair[1], filepath, MAX_PATH);
+  			char date[30], stats[30];
+  			int file_size;
+
+			printf("Gasit: \"%s\"\n", filepath);
+
+  			read(socket_pair[1], date, 25);
+  			date[24] = '\0';
+  			printf("Data crearii       : %s\n", date);
+
+  			read(socket_pair[1], date, 25);
+  			date[24] = '\0';
+  			printf("Data modificarii   : %s\n", date);
+
+  			read(socket_pair[1], &file_size, 8);
+  			printf("Dimensiune in bytes: %llu\n", file_size);
+
+  			read(socket_pair[1], stats, 30);
+  			printf("Permisiuni fisier  : %s\n", stats);
+  		}
+  	}
+}
+
+void FindFile(char* path, char *to_find)
+{
+	DIR *p_dir;
+	struct dirent *p_dirent;
+	struct stat *p_stat = (struct stat*) malloc(sizeof(struct stat));
+
+	p_dir = opendir(path);
+	if(p_dir == NULL){
+		fprintf(stderr, "[ERROR] Nu am acces la \"%s\"\n", path);
+		return;
+	}
+
+	while(1){
+		p_dirent = readdir(p_dir);
+		if (p_dirent == NULL)
+			return;
+		if(!strcmp(p_dirent->d_name,".") ||
+		   !strcmp(p_dirent->d_name,".."))
+			continue;
+
+		char next_path[MAX_PATH];
+		strcpy(next_path, path);
+		strcat(next_path, p_dirent->d_name);
+
+		stat(next_path, p_stat);
+		char* fname = p_dirent->d_name;
+
+		switch (p_stat->st_mode & S_IFMT) {
+			case S_IFDIR:
+				strcat(next_path, "/");
+				FindFile(next_path, to_find);
+			    break;           
+			default:
+				if(!strcmp(to_find, fname)){
+					PrintFileDetails(next_path);
+				}
+		}
+	}
+	closedir(p_dir);
+}
+
 int main(int argc, char** argv)
 {
 	char input[INPUT_LEN];
@@ -169,11 +292,11 @@ int main(int argc, char** argv)
 
 		ParseString(input, command, arg);
 
-#ifdef DEBUG
+	#ifdef DEBUG
 		printf("[DEBUG] input   : %s\n", input);
 		printf("[DEBUG] command : %s\n", command);
 		printf("[DEBUG] argument: %s\n", arg);
-#endif
+	#endif
 
 		if(!strcmp(command, "help"))
 			PrintHelp();
@@ -182,7 +305,20 @@ int main(int argc, char** argv)
 		else if(!strcmp(command, "login"))
 			LogIn();
 		else if(!strcmp(command, "myfind")){
-	
+			if(strlen(arg) == 0)
+				fprintf(stderr, "[ERROR] Nume de fisier null.\n");
+			else{
+				char start_path[MAX_PATH];
+				if(getcwd(start_path, sizeof(start_path)) == NULL)
+					fprintf(stderr, "[ERROR] Nu se poate citi directorul curent.\n");
+				else{
+					strcat(start_path, "/");
+				#ifdef DEBUG
+					printf("[DEBUG] caut \"%s\" in \"%s\"\n", arg, start_path);
+				#endif
+					FindFile(start_path, arg);
+				}
+			}
 		}
 		else if(!strcmp(command, "mystat")){
 
