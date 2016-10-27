@@ -12,7 +12,6 @@
 
 #include "sha256.h"
 
-
 #define FIFO_FILE_NAME "myfifo"
 #define MAX_PATH 256
 #define INPUT_LEN 276
@@ -38,7 +37,7 @@ char* GetHexSHA(char* sha)
     return hex_buffer;
 }
 
-int CheckPasswordHash(char pass[31])
+int CheckPasswordHash(char username[31], char pass[31])
 {
     char sha1[SHA256_BLOCK_SIZE+1];
     SHA256_CTX ctx;
@@ -49,33 +48,45 @@ int CheckPasswordHash(char pass[31])
     sha1[SHA256_BLOCK_SIZE] = '\0';
 
 #ifdef GENERATE_SHA_KEY
-    FILE* fp_generator = fopen("password_hash", "wb");
-    fprintf(fp_generator, "%s", sha1);
+    //FILE* fpc = fopen("accounts.config", "w");
+    //fclose(fpc);
+    FILE* fp_generator = fopen("accounts.config", "a");
+    fprintf(fp_generator, "%s %s\n", username, sha1);
     fclose(fp_generator);
 #endif
 
-    FILE* fp = fopen("password_hash", "rb");
-    char sha2[SHA256_BLOCK_SIZE+1];
-    fscanf(fp, "%s", &sha2);
-    sha2[SHA256_BLOCK_SIZE] = '\0';
+    FILE* fp = fopen("accounts.config", "rb");
+    char sha2[SHA256_BLOCK_SIZE+1], user[31];
 
-#ifdef DEBUG
-    printf("[DEBUG] SHA@keyboard: %s\n", GetHexSHA(sha1));
-    printf("[DEBUG] SHA@file    : %s\n", GetHexSHA(sha2));
-#endif
+    while(fscanf(fp, "%s %s", &user, &sha2) != EOF){
+        sha2[SHA256_BLOCK_SIZE] = '\0';
 
-    return memcmp(sha1, sha2, SHA256_BLOCK_SIZE);
+    #ifdef DEBUG
+        printf("[DEBUG] usr@keyboard: %s\n", username);
+        printf("[DEBUG] usr@file    : %s\n", user);
+        printf("[DEBUG] SHA@keyboard: %s\n", GetHexSHA(sha1));
+        printf("[DEBUG] SHA@file    : %s\n", GetHexSHA(sha2));
+    #endif
+        if(!strcmp(username, user))
+            return memcmp(sha1, sha2, SHA256_BLOCK_SIZE);
+    }
+    return -1;
 }
 
 void LogIn()
 {
-    char pass[31], newpass[31];
+    char user[31], pass[31];
+    char username[31], password[31];
+
     int login_pipe[2], login_pipe_ret[2];
 
-    printf("Introdu parola: ");
-    fgets(pass, 30, stdin);
-    
-    ( (char*) strchr(pass, '\n') )[0] = '\0';
+    printf("Introdu username: ");
+    fgets(username, 30, stdin);
+    ( (char*) strchr(username, '\n') )[0] = '\0';
+
+    printf("Introdu parola  : ");
+    fgets(password, 30, stdin);
+    ( (char*) strchr(password, '\n') )[0] = '\0';
     
     if(pipe(login_pipe) == -1){
         fprintf(stderr, "[ERROR] pipe login.\n");
@@ -93,17 +104,19 @@ void LogIn()
         case 0:
             close(login_pipe[1]);
             close(login_pipe_ret[0]);
-            read(login_pipe[0], &newpass, 31);
-            int result = CheckPasswordHash(newpass);
+            read(login_pipe[0], &user, 31);
+            read(login_pipe[0], &pass, 31);
+            int result = CheckPasswordHash(username, pass);
             write(login_pipe_ret[1], &result, 4);
             exit(0);
         default:
             close(login_pipe[0]);
             close(login_pipe_ret[1]);
-            write(login_pipe[1], &pass, strlen(pass) + 1);
+            write(login_pipe[1], &username, 31);
+            write(login_pipe[1], &password, 31);
             int logging_in_status;
             read(login_pipe_ret[0], &logging_in_status, 4);
-            while(logging_in_status != 0){
+            if(logging_in_status != 0){
                 fprintf(stderr, "[ERROR] Parola gresita.\n");
                 exit(1);
             }
@@ -406,7 +419,7 @@ void GetFileAttributes(char *filename)
                 fprintf(stderr, "[ERROR] Nu s-a putut citi <size> din fisier fifo.\n");
                 exit(1);
             }
-            printf("Size fisier : %llu\n", links);
+            printf("Size fisier : %llu\n", size);
 
             if(read(fd, date, 24) == -1){
                 fprintf(stderr, "[ERROR] Nu s-a putut citi <cdate> din fisier fifo.\n");
@@ -443,7 +456,7 @@ int main(int argc, char** argv)
     while(1)
     {
         printf("\n");
-        fgets(input, 276, stdin);
+        fgets(input, INPUT_LEN, stdin);
         ( (char*) strchr(input, '\n') )[0] = '\0';
 
         ParseString(input, command, arg);
