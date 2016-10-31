@@ -18,14 +18,16 @@
 #define ARG_LEN 256
 #define CMD_LEN 20
 //#define GENERATE_SHA_KEY
-//#define DEBUG
+#define DEBUG
 
 
 void PrintHelp()
 {
     printf("login         - pentru logarea in aplicatie\n");
     printf("myfind <file> - cautare fisier recursiv\n");
-    printf("mystat <file> - afiseaza atribute fisiier\n");
+    printf("mystat <file> - afiseaza atribute fisier\n");
+    printf("mycd   <dir>  - schimba directorul\n");
+    printf("myls          - listeaza directorul curent\n");
     printf("quit / exit   - inchide aplicatia\n");
 }
 
@@ -500,6 +502,12 @@ int main(int argc, char** argv)
                 printf("\nStatus fisier \"%s\":\n", arg);
                 GetFileAttributes(arg);
             }
+        }
+        else if(!strcmp(command, "mycd")){
+        	chdir(arg);
+        }
+        else if(!strcmp(command, "myls")){
+        	system("ls -lA");
         }
     }
 }
