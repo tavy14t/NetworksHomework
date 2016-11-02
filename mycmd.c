@@ -1,3 +1,8 @@
+/*******************************************************************
+* Author: Ilie Ionut Octavian
+* Project: Tema 1 retele (implementari de pipe, socketpair si fifo)
+* Project evolution: https://github.com/tavy14t/NetworksHomework
+*******************************************************************/
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -17,7 +22,6 @@
 #define INPUT_LEN 276
 #define ARG_LEN 256
 #define CMD_LEN 20
-//#define GENERATE_SHA_KEY
 #define DEBUG
 
 
@@ -28,54 +32,80 @@ void PrintHelp()
     printf("mystat <file> - afiseaza atribute fisier\n");
     printf("mycd   <dir>  - schimba directorul\n");
     printf("myls          - listeaza directorul curent\n");
+    printf("register      - inregistreaza un nou user\n");
     printf("quit / exit   - inchide aplicatia\n");
 }
 
 char* GetHexSHA(char* sha)
 {
-    char *hex_buffer = (char*) calloc(65, 0);
+    char *hex_buffer = (char*) calloc(SHA256_BLOCK_SIZE*2+1, 0);
     for (int i=0; i<SHA256_BLOCK_SIZE; i++)
         sprintf(hex_buffer, "%s%02X", hex_buffer, sha[i] & 0xff);
     return hex_buffer;
 }
 
-int CheckPasswordHash(char username[31], char pass[31])
+void createUser(char username[31], char password[31])
+{
+	FILE *f;
+	if(access("accounts.config", F_OK) == -1){
+		f = fopen("accounts.config", "w");
+	}
+	else{
+		f = fopen("accounts.config", "a");
+	}
+    fprintf(f, "%s ", username);
+
+    char sha_passhash[SHA256_BLOCK_SIZE+1];
+    char sha_passhex[SHA256_BLOCK_SIZE*2+1];
+    SHA256_CTX ctx;
+    sha256_init(&ctx);
+    sha256_update(&ctx, password, strlen(password));
+    sha256_final(&ctx, sha_passhash);
+    sha_passhash[SHA256_BLOCK_SIZE] = '\0';
+	strcpy(sha_passhex, GetHexSHA(sha_passhash));
+
+    fprintf(f, "%s\n", sha_passhex);
+    fseek(f, 0, SEEK_SET);
+    fclose(f);
+
+#ifdef DEBUG
+	printf("[DEBUG] S-a creat contul %s\n", username);
+#else
+	printf("Utilizatorul s-a creat cu succes.\n");
+#endif
+	exit(0);
+}
+
+int CheckPasswordHash(char username[31], char password[31])
 {
     char sha1[SHA256_BLOCK_SIZE+1];
+    char sha1_hex[SHA256_BLOCK_SIZE*2 + 1];
     SHA256_CTX ctx;
 
     sha256_init(&ctx);
-    sha256_update(&ctx, pass, strlen(pass));
+    sha256_update(&ctx, password, strlen(password));
     sha256_final(&ctx, sha1);
     sha1[SHA256_BLOCK_SIZE] = '\0';
-
-#ifdef GENERATE_SHA_KEY
-    //FILE* fpc = fopen("accounts.config", "w");
-    //fclose(fpc);
-    FILE* fp_generator = fopen("accounts.config", "a");
-    fprintf(fp_generator, "%s %s\n", username, sha1);
-    fclose(fp_generator);
-#endif
+    strcpy(sha1_hex, GetHexSHA(sha1));
 
     FILE* fp = fopen("accounts.config", "rb");
-    char sha2[SHA256_BLOCK_SIZE+1], user[31];
+    char sha2_hex[100], user[31];
 
-    while(fscanf(fp, "%s %s", &user, &sha2) != EOF){
-        sha2[SHA256_BLOCK_SIZE] = '\0';
+    while(fscanf(fp, "%s %s", &user, &sha2_hex) != EOF){
 
     #ifdef DEBUG
         printf("[DEBUG] usr@keyboard: %s\n", username);
         printf("[DEBUG] usr@file    : %s\n", user);
-        printf("[DEBUG] SHA@keyboard: %s\n", GetHexSHA(sha1));
-        printf("[DEBUG] SHA@file    : %s\n", GetHexSHA(sha2));
+        printf("[DEBUG] SHA@keyboard: %s\n", sha1_hex);
+        printf("[DEBUG] SHA@file    : %s\n", sha2_hex);
     #endif
         if(!strcmp(username, user))
-            return memcmp(sha1, sha2, SHA256_BLOCK_SIZE);
+            return memcmp(sha1_hex, sha2_hex, SHA256_BLOCK_SIZE*2);
     }
     return -1;
 }
 
-void LogIn()
+int LogIn()
 {
     char user[31], pass[31];
     char username[31], password[31];
@@ -106,10 +136,21 @@ void LogIn()
         case 0:
             close(login_pipe[1]);
             close(login_pipe_ret[0]);
-            read(login_pipe[0], &user, 31);
-            read(login_pipe[0], &pass, 31);
+            if(read(login_pipe[0], &user, 31) == -1){
+            	fprintf(stderr, "[ERROR]\tNu s-a putut citi din pipe userul - LogIn\n");
+            	exit(1);
+            }
+            if(read(login_pipe[0], &pass, 31) == -1){
+            	fprintf(stderr, "[ERROR]\tNu s-a putut citi din pipe parola - LogIn\n");
+            	exit(1);
+            }
             int result = CheckPasswordHash(username, pass);
-            write(login_pipe_ret[1], &result, 4);
+            if(write(login_pipe_ret[1], &result, 4) == -1){
+            	fprintf(stderr, "[ERROR]\tNu s-a putut scrie in pipe statusul logarii - LogIn\n");
+            	exit(1);
+            }
+            close(login_pipe[0]);
+            close(login_pipe_ret[1]);
             exit(0);
         default:
             close(login_pipe[0]);
@@ -117,12 +158,19 @@ void LogIn()
             write(login_pipe[1], &username, 31);
             write(login_pipe[1], &password, 31);
             int logging_in_status;
-            read(login_pipe_ret[0], &logging_in_status, 4);
+
+            if(read(login_pipe_ret[0], &logging_in_status, 4) == -1){
+            	fprintf(stderr, "[ERROR]\tNu s-a putut citi din pipe - LogIn\n");
+            	exit(1);
+            }
             if(logging_in_status != 0){
                 fprintf(stderr, "[ERROR] Parola gresita.\n");
-                exit(1);
+                return 0;
             }
+            close(login_pipe[1]);
+            close(login_pipe_ret[0]);
     }
+    return 1;
 }
 
 void ParseString(char* input, char *name, char *arg1)
@@ -424,27 +472,28 @@ void GetFileAttributes(char *filename)
             printf("Size fisier : %llu\n", size);
 
             if(read(fd, date, 24) == -1){
-                fprintf(stderr, "[ERROR] Nu s-a putut citi <cdate> din fisier fifo.\n");
+                fprintf(stderr, "[ERROR] Nu s-a putut citi <ctime> din fisier fifo.\n");
                 exit(1);
             }
             date[24] = '\0';
-            printf("Data ultima schimbare  : %s\n", date);
+            printf("Data schimbare status  : %s\n", date);
 
             if(read(fd, date, 24) == -1){
-                fprintf(stderr, "[ERROR] Nu s-a putut citi <adate> din fisier fifo.\n");
+                fprintf(stderr, "[ERROR] Nu s-a putut citi <atime> din fisier fifo.\n");
                 exit(1);
             }
             date[24] = '\0';
             printf("Data ultimului acces   : %s\n", date);
 
             if(read(fd, date, 24) == -1){
-                fprintf(stderr, "[ERROR] Nu s-a putut citi <mdate> din fisier fifo.\n");
+                fprintf(stderr, "[ERROR] Nu s-a putut citi <mtime> din fisier fifo.\n");
                 exit(1);
             }
             date[24] = '\0';
             printf("Data ultimei modificari: %s\n", date);
         }
     }
+    unlink(FIFO_FILE_NAME);
 }
 
 int main(int argc, char** argv)
@@ -453,7 +502,7 @@ int main(int argc, char** argv)
     char command[CMD_LEN];
     char arg[ARG_LEN];
     
-    LogIn();
+    while(LogIn()==0);
 
     while(1)
     {
@@ -474,7 +523,7 @@ int main(int argc, char** argv)
         else if(!strcmp(command, "quit") || !strcmp(command, "exit"))
             exit(0);
         else if(!strcmp(command, "login"))
-            LogIn();
+            while(LogIn()==0);
         else if(!strcmp(command, "myfind")){
             if(strlen(arg) == 0)
                 fprintf(stderr, "[ERROR] Nume de fisier null.\n");
@@ -508,6 +557,17 @@ int main(int argc, char** argv)
         }
         else if(!strcmp(command, "myls")){
         	system("ls -lA");
+        }
+        else if(!strcmp(command, "register")){
+        	char username[31];
+        	printf("username: ");
+        	fgets(username, 30, stdin);
+    		( (char*) strchr(username, '\n') )[0] = '\0';
+    		char password[31];
+    		printf("password: ");
+    		fgets(password, 30, stdin);
+    		( (char*) strchr(password, '\n') )[0] = '\0';
+    		createUser(username, password);
         }
     }
 }
